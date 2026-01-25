@@ -1,0 +1,76 @@
+name: Daily Filter Onair
+
+on:
+  schedule:
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: daily-filter-onair
+  cancel-in-progress: false
+
+jobs:
+  filter-onair:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout current repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.ref }}
+          persist-credentials: true
+
+      - name: Setup Deno
+        uses: denoland/setup-deno@v2
+
+      - name: Download data.json
+        run: |
+          mkdir -p temp
+          curl -o temp/data.json https://raw.githubusercontent.com/bangumi-data/bangumi-data/master/dist/data.json
+
+      - name: Check if data.json has changed
+        id: check_update
+        run: |
+          if [ ! -f dist/data.json ]; then
+            echo "has_update=true" >> $GITHUB_OUTPUT
+          elif ! diff -q dist/data.json temp/data.json > /dev/null 2>&1; then
+            echo "has_update=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_update=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run filter_onair.ts
+        if: steps.check_update.outputs.has_update == 'true'
+        run: |
+          BRANCH=${GITHUB_REF#refs/heads/}
+          git fetch origin "$BRANCH"
+          git checkout -B "$BRANCH" "origin/$BRANCH" || git checkout -B "$BRANCH"
+          mkdir -p dist
+          cp temp/data.json dist/data.json
+          deno eval '
+            const bangumi_data = JSON.parse(await Deno.readTextFile("./dist/data.json"));
+            const end = Date.now() - 8 * 24 * 60 * 60 * 1000;
+            bangumi_data.items = bangumi_data.items.filter((item) => !item.end || new Date(item.end).getTime() >= end);
+            await Deno.writeTextFile("./dist/onair.json", JSON.stringify(bangumi_data));
+            '
+
+      - name: Commit and push changes
+        if: steps.check_update.outputs.has_update == 'true'
+        env:
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          # ensure we know the branch and its remote state
+          git fetch origin "$BRANCH"
+          git checkout -B "$BRANCH" "origin/$BRANCH" || git checkout -B "$BRANCH"
+          git add dist/data.json dist/onair.json
+          if git log -1 --pretty=format:%an "origin/$BRANCH" | grep -q "github-actions\[bot\]"; then
+            git commit --amend --no-edit --date="now"
+          else
+            git commit -m "chore: update onair.json from bangumi-data"
+          fi
+          git push --force-with-lease origin "HEAD:$BRANCH"
