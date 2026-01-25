@@ -1,0 +1,51 @@
+name: Daily Filter Onair
+
+on:
+  schedule:
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  filter-onair:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout current repository
+        uses: actions/checkout@v4
+
+      - name: Setup Deno
+        uses: denoland/setup-deno@v2
+
+      - name: Download data.json
+        run: |
+          mkdir -p temp
+          curl -o temp/data.json https://raw.githubusercontent.com/bangumi-data/bangumi-data/master/dist/data.json
+
+      - name: Check if data.json has changed
+        id: check_update
+        run: |
+          if [ ! -f dist/data.json ]; then
+            echo "has_update=true" >> $GITHUB_OUTPUT
+          elif ! diff -q dist/data.json temp/data.json > /dev/null 2>&1; then
+            echo "has_update=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_update=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run filter_onair.ts
+        if: steps.check_update.outputs.has_update == 'true'
+        run: |
+          mkdir -p dist
+          cp temp/data.json dist/data.json
+          deno run -A filter_onair.ts dist/data.json -o dist/onair.json
+
+      - name: Commit and push changes
+        if: steps.check_update.outputs.has_update == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add dist/data.json dist/onair.json
+          git commit -m "chore: update onair.json from bangumi-data" || true
+          git push
